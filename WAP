@@ -1,0 +1,296 @@
+## load libraries
+        library(RODBC)
+        library(stringr)
+        library(data.table)
+        library(RSocrata)
+        library(lubridate)
+        library(sqldf)
+
+      odbcCloseAll()
+      setwd("/..")
+      if(!file.exists("./Temp/WACannabis")){dir.create("./Temp/WACannabis")}
+      setwd("C:/Temp/WACannabis/")
+      ##
+
+      ### Remove the permanent variables when a subroutine is finished.
+      
+      
+    ######################################################################################
+    #       Dashboard Other Products Sales w/Weight Daily
+    ####################################################################################
+      ## Permanent variables
+      Token <-c("4e4JDsr5kZEXzzAadCdIrC891")
+      ch <- odbcConnect("VizzySolutions")
+      Rec_Adds <- data.frame()
+      
+      
+      
+    FinalTable <- "WAPotOtherProductSalesDaily"
+    url <- "https://data.lcb.wa.gov/resource/gp5s-yhdf.json"
+    
+    ##  queries
+    q1 <- paste("select max(sales_date) from ",FinalTable) 
+    q2 <- paste("insert into ",FinalTable," select * from WAPot")
+    q3 <- paste("select count(sales_date) as recct from ",FinalTable) 
+    
+    ##  get the data from Socrata       
+    df <- read.socrata(url,Token)
+    #sqlSave(ch, df, "WAPot", rownames = FALSE)  ## First time make table structure
+    
+    ## get the last date for which there was data reporting.  Manipulate so
+    ## the date can be returned in a query.  Get rid of blank spaces in date quote
+    ## as that returns too many values.
+    lastDat<-sqlQuery(ch,q1)
+    if(is.na(lastDat[1,1])) {lastDat[1,1] <-'2014-01-01' }
+    OLD <- as.character(lastDat[,1])  # original Last Date from Final Table
+    
+    #create temp dataframe to pull those records which haven't been included in the db yet    
+    df2 <- df[which(df$sales_date > OLD),]
+ 
+    ## the posIX date type conflicts with sql server datetime, so converting to characters first  
+    df2$sales_date<-as.character(df2$sales_date)
+    
+    
+    # sqlSave seems to flake out at times for the update, so created looping statement to keep trying.  
+    #  also building records for printing out & checks
+    
+    expectRec <- sum(!is.na(df[,1])) #new expected final record ct
+    rec2add <- sum(!is.na(df2[,1])) #new expected record add ct
+    NLD <- c()  #create blank variable in case there are no updates required.
+    RecCt <-sqlQuery(ch, q3)     # original record count for looping check.  Loop will end when equals new dataframe
+    OrigRecCt <-RecCt[1,1]
+    
+    while (OrigRecCt != expectRec) { 
+      
+      #  just in case of looping, have to delete the sql server table
+      ## always check that the temporary table is dropped or it causes problems
+      test<-"WAPot" %in% sqlTables(ch)$TABLE_NAME
+      if (test == "TRUE") {sqlDrop(ch, "WAPot", errors = FALSE)}
+      
+      #  Move the new data into temp table before appending to existing database.  
+      sqlSave(ch, df2, "WAPot", rownames = FALSE)
+      
+      #  Move the new data from the temp table in sql server to the permanent one 
+      #   which has all the variable types appropriately set up
+      sqlQuery(ch,q2)
+      
+      ##    First pass build the Record Info data frame 
+      lastDat<-sqlQuery(ch,q1) #Get New Last Date from Final Table
+      NLD <- as.character(lastDat[,1])#New Record Count from Final Table
+      RecCt <-sqlQuery(ch, q3)
+      OrigRecCt <-RecCt[1,1]
+    }
+    
+    # write audit records to the table & show results 
+    if(is.null(NLD)) {NLD <-0}
+    NewRec <- cbind(FinalTable, OLD, NLD, rec2add, expectRec, RecCt[1,1] , OrigRecCt) 
+    colnames(NewRec) <-c("Table", "OrigLastDate", "NewLastDate", "Record2Add", "ExpectedRecCt", "FinalActualRecCt", "OriginalRecCt")
+    Rec_Adds <- rbind(Rec_Adds, NewRec)
+    
+    print(Rec_Adds)
+    
+    # delete the temporary sql server table  
+    test<-"WAPot" %in% sqlTables(ch)$TABLE_NAME
+    if (test == "TRUE") {sqlDrop(ch, "WAPot", errors = FALSE)}
+ 
+
+    #####################################################################
+    #                   Sales and Tax Report
+       FinalTable <- "WAPotSalesAndTax"
+       url <- "https://data.lcb.wa.gov/resource/mnnb-ze8g.json"
+    ###############################################################################
+       ## Permanent variables
+       Token <-c("4e4JDsr5kZEXzzAadCdIrC891")
+       ch <- odbcConnect("VizzySolutions")
+       #Rec_Adds <- data.frame()
+       
+       
+          ##  queries
+            q1 <- paste("select max(period_end) from ",FinalTable) 
+            q2 <- paste("insert into ",FinalTable," select * from WAPot")
+            q3 <- paste("select count(period_end) as recct from ",FinalTable) 
+            
+          ##  get the data from Socrata       
+            df <- read.socrata(url,Token)
+          ## get the last date for which there was data reporting.  Manipulate so
+          ## the date can be returned in a query.  Get rid of blank spaces in date quote
+          ## as that returns too many values.
+            lastDat<-sqlQuery(ch,q1)
+            if(is.na(lastDat[1,1])) {lastDat[1,1] <-'2014-01-01' }
+          #create temp dataframe to pull those records which haven't been included in the db yet    
+            df2 <- df[which(df$period_end > as.Date(as.POSIXlt(lastDat[1,1]))),]
+     
+          ## the posIX date type conflicts with sql server datetime, so converting to characters first  
+             df2$period_end<-as.character(df2$period_end)
+             df2$period_start<-as.character(df2$period_start)
+             df2$submit_date<-as.character(df2$submit_date)  
+    
+          # sqlSave seems to flake out at times for the update, so created looping statement to keep trying.  
+             #  also building records for printing out & checks
+             
+            expectRec <- sum(!is.na(df[,1])) #new expected final record ct
+            rec2add <- sum(!is.na(df2[,1])) #new expected record add ct
+            OLD <- as.character(lastDat[,1])  # original Last Date from Final Table
+            NLD <- c()  #create blank variable in case there are no updates required.
+            RecCt <-sqlQuery(ch, q3)     # original record count for looping check.  Loop will end when equals new dataframe
+            OrigRecCt <-RecCt[1,1]
+           
+        while (OrigRecCt != expectRec) { 
+          
+          #  just in case of looping, have to delete the sql server table
+          ## always check that the temporary table is dropped or it causes problems
+            test<-"WAPot" %in% sqlTables(ch)$TABLE_NAME
+            if (test == "TRUE") {sqlDrop(ch, "WAPot", errors = FALSE)}
+     
+          #  Move the new data into temp table before appending to existing database.  
+             sqlSave(ch, df2, "WAPot", rownames = FALSE)
+          
+          #  Move the new data from the temp table in sql server to the permanent one 
+          #   which has all the variable types appropriately set up
+              sqlQuery(ch,q2)
+      
+          ##    First pass build the Record Info data frame 
+              lastDat<-sqlQuery(ch,q1) #Get New Last Date from Final Table
+              NLD <- as.character.Date(lastDat[,1])#New Record Count from Final Table
+              RecCt <-sqlQuery(ch, q3)
+              OrigRecCt <-RecCt[1,1]
+        }
+        
+            # write audit records to the table & show results 
+              if(is.null(NLD)) {NLD <-0}
+              NewRec <- cbind(FinalTable, OLD, NLD, rec2add, expectRec, RecCt[1,1], OrigRecCt)
+              colnames(NewRec) <-c("Table", "OrigLastDate", "NewLastDate", "Record2Add", "ExpectedRecCt", "FinalActualRecCt", "OriginalRecCt")
+              Rec_Adds <- rbind(Rec_Adds, NewRec)
+              print(Rec_Adds)
+                  
+          # delete the temporary sql server table  
+              test<-"WAPot" %in% sqlTables(ch)$TABLE_NAME
+              if (test == "TRUE") {sqlDrop(ch, "WAPot", errors = FALSE)}
+ 
+    #####################################################################
+    #                   Licensed Businesses
+    #####################################################################
+            ## Permanent variables
+            Token <-c("4e4JDsr5kZEXzzAadCdIrC891")
+            ch <- odbcConnect("VizzySolutions")
+            #Rec_Adds <- data.frame()
+            
+            
+            FinalTable <- "WAPotLicensedBusinesses"
+            url <-  "https://data.lcb.wa.gov/resource/bhbp-x4eb.json"
+            ## dates in this table are characters which will end up as integers
+            
+            
+            ##  queries
+            q1 <- paste("select max(createdate) from ",FinalTable) 
+            q2 <- paste("insert into ",FinalTable," select * from WAPot")
+            q3 <- paste("select count(createdate) as recct from ",FinalTable) 
+            
+            ##  get the data from Socrata       
+            df <- read.socrata(url,Token)
+            ## get the last date for which there was data reporting.  Manipulate so
+            ## the date can be returned in a query.  Get rid of blank spaces in date quote
+            ## as that returns too many values.
+            lastDat<-sqlQuery(ch,q1)
+            if(is.na(lastDat[1,1])) {lastDat[1,1] <-'20140101' }
+            #create temp dataframe to pull those records which haven't been included in the db yet    
+            df2 <- df[which(df$createdate > lastDat[1,1]),]
+            
+            # sqlSave seems to flake out at times for the update, so created looping statement to keep trying.  
+            #  also building records for printing out & checks
+            
+            expectRec <- sum(!is.na(df[,1])) #new expected final record ct
+            rec2add <- sum(!is.na(df2[,1])) #new expected record add ct
+            OLD <- as.character(lastDat[,1])  # original Last Date from Final Table
+            NLD <- c()  #create blank variable in case there are no updates required.
+            RecCt <-sqlQuery(ch, q3)     # original record count for looping check.  Loop will end when equals new dataframe
+            OrigRecCt <-RecCt[1,1]
+            
+            while (OrigRecCt != expectRec) { 
+              
+              #  just in case of looping, have to delete the sql server table
+              ## always check that the temporary table is dropped or it causes problems
+              test<-"WAPot" %in% sqlTables(ch)$TABLE_NAME
+              if (test == "TRUE") {sqlDrop(ch, "WAPot", errors = FALSE)}
+              
+              #  Move the new data into temp table before appending to existing database.  
+              sqlSave(ch, df2, "WAPot", rownames = FALSE)
+              
+              #  Move the new data from the temp table in sql server to the permanent one 
+              #   which has all the variable types appropriately set up
+              sqlQuery(ch,q2)
+              
+              ##    First pass build the Record Info data frame 
+              lastDat<-sqlQuery(ch,q1) #Get New Last Date from Final Table
+              NLD <- lastDat[,1]#New Record Count from Final Table
+              RecCt <-sqlQuery(ch, q3)
+              OrigRecCt <-RecCt[1,1]
+            }
+            
+            # write audit records to the table & show results 
+            if(is.null(NLD)) {NLD <-0}
+            NewRec <- cbind(FinalTable, OLD, NLD, rec2add, expectRec, RecCt[1,1] , OrigRecCt) 
+            colnames(NewRec) <-c("Table", "OrigLastDate", "NewLastDate", "Record2Add", "ExpectedRecCt", "FinalActualRecCt", "OriginalRecCt")
+            Rec_Adds <- rbind(Rec_Adds, NewRec)
+           
+            print(Rec_Adds)
+            
+            # delete the temporary sql server table  
+            test<-"WAPot" %in% sqlTables(ch)$TABLE_NAME
+            if (test == "TRUE") {sqlDrop(ch, "WAPot", errors = FALSE)}
+    
+
+ 
+        
+        
+        
+
+#####################################################################
+#                             Violations Dataset
+#####################################################################
+   FinalTable <- "WAPotViolations"
+   url <- "https://data.lcb.wa.gov/resource/dgm4-3cm6.json"
+
+   ##  queries
+   q1 <- paste("select max(visit_date) from ",FinalTable) 
+   q2 <- paste("insert into ",FinalTable," select * from WAPot")
+
+ 
+#####################################################################        
+#         Enforcement Visits Dataset
+#####################################################################    
+   FinalTable <- "WAPotEnforcementVisits"
+   url <- "https://data.lcb.wa.gov/resource/w7wg-8m52.json"
+  
+   
+   ##  queries
+   q1 <- paste("select max(date) from ",FinalTable) 
+   q2 <- paste("insert into ",FinalTable," select * from WAPot")
+
+        
+        # #Dashboard Extract Conversions
+        # FinalTable <- "WAPotExtractConversions"
+        # url <- "https://data.lcb.wa.gov/resource/vbqh-2tf4.json"
+        #
+        # #Compliance Checks Dataset
+        # FinalTable <- "WAPotComplianceChecks"
+        # url <- "https://data.lcb.wa.gov/resource/3qmf-vgdg.json"
+        #
+        # #Dashboard Usable Conversions - Production
+        # FinalTable <- "WAPotUsableConversionProd"
+        # url <-"https://data.lcb.wa.gov/resource/kdyh-jjfc.json"
+        #
+        # #Flower Lot Wholesales
+        # FinalTable <- "WAPotFlowerLotWholesales"
+        # url <- "https://data.lcb.wa.gov/resource/8rrd-wvpk.json"
+       #
+        # #Compliance Checks  - Unused.
+        # FinalTable <- "WAPotComplianceChecks"
+        # url <- "https://data.lcb.wa.gov/resource/e68h-xjnd.json"
+
+        
+        
+
+
+
+
