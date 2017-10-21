@@ -1,0 +1,280 @@
+#####################################################
+##
+##    This takes "dirty" addresses (those which might have a suite number, or a non-standard
+##      name) and uses the USPS (US Postal Service) to standardize the name.
+##
+##    Load a Record Number, the DBA name/Trade Name, Street Address, City, State, & Zip
+##      into the file text2tidy.xlsx
+##    All fields need to be filled,
+##    
+##
+##Source this file & let it execute.  The USPS only allows 5 records at a time to be
+##      submitted.  The returned, cleaned, address file is "CleanedAddies.txt"
+##
+##    
+##
+##
+##
+
+if(!require(tidytext)){install.packages("tidytext")}
+if(!require(tidyr)){install.packages("tidyr")}
+if(!require(dplyr)){install.packages("dplyr")}
+if(!require(plyr)){install.packages("plyr")}
+if(!require(broom)){install.packages("broom")}
+if(!require(openxlsx)){install.packages("openxlsx")}
+if(!require(stringr)){install.packages("stringr")}
+if(!require(sqldf)){install.packages("sqldf")}
+if(!require(stringdist)){install.packages("stringdist")}
+if(!require(reshape)) {install.packages('reshape')}
+if(!require(fuzzyjoin)) {install.packages("fuzzyjoin")}
+if(!require(XML)){install.packages("XML")}
+
+  
+  library(fuzzyjoin)
+  library(tidyr)
+  library(openxlsx)  ## allows load of xlsx without java heap errors
+  library(reshape)
+  library(stringdist)
+  library(sqldf)
+  library(stringr)
+  library(broom)
+  library(dplyr)
+  library(tidytext)
+  library(XML)
+  library(plyr)
+
+##########################################################################
+##
+##
+##    Set up working directory, get file, and administer base file
+##
+##
+##########################################################################
+##
+## Create standard new working directory for this project
+##
+#  back out to main directory
+  setwd("/..")
+  if(!file.exists("./Temp/50States")){dir.create("./Temp/50States")}
+  setwd("C:/Temp/50States/")
+##
+  
+#######################  Get data file #####################################   
+  
+  ## get the text2tidy file with expected addresses and preserve RecordNumbers    
+  
+  text2tidy<-read.xlsx("text2tidy.xlsx", sheet = 1, startRow = 1, colNames = TRUE,
+                       rowNames = FALSE)
+  
+  ## get rid of punctuation to help with USPS lookups
+  text2tidy<-mutate(text2tidy, DirtyAddress = gsub("[[:punct:]]","", DirtyAddress))
+  
+#########################################################################
+##
+##    Make the file to hold the dirty address records.  Get rid
+##    of duplicate records, create base values to hold parameters    
+##    for looping 
+##
+##########################################################################
+  # #FirstPass Easy Duplication check
+  
+  #get non duplicated records
+  dirty_addie<-mutate(unique(text2tidy))
+   
+  ##  Because various USPS APIs will fault out for NA values, creating
+  ##  Separate tables for various types of NA
+  
+  no_addie<-subset(dirty_addie, is.na(dirty_addie$DirtyAddress))
+  no_city<-subset(dirty_addie, is.na(dirty_addie$DirtyCity))
+  no_zip<-subset(dirty_addie, is.na(dirty_addie$DirtyZip))
+  
+  ## process only the records which have all components & create new recordnumber
+  dirty_addie<-na.omit(dirty_addie)
+#  dirty_addie <- mutate(dirty_addie, PremiseRecord = as.numeric(row.names(dirty_addie)))
+  dirty_addie<-dirty_addie[order(dirty_addie$PremiseRecord),]
+
+##########################################################################
+##
+#################  Variables to hold static values & definitions  ########
+
+  
+  ## set up info for looping & USPS connection
+  scheme_host <- paste0("http://production.shippingapis.com/",
+                        "ShippingAPI.dll?")
+  
+  validate_path <- paste0("API=Verify&XML=",
+                          "<AddressValidateRequest USERID=")
+  username <- paste0("\"465VIZZY4702\">")
+  rev<-"<Revision>1</Revision>"
+  val_end<-"</AddressValidateRequest>"
+  
+   ## clean data frames  
+  clean <-data.frame()
+  clean2<-data.frame()
+  
+  cleaned_address <- data.frame(matrix(ncol = 12, nrow = 0))
+   
+  colnames(cleaned_address) <-c(
+                                 #original fields
+                                 "PremiseRecord", "PremiseName", "DirtyAddress","DirtyCity",
+                                 "DirtyState","DirtyZip",
+       
+                                 #Error Capture
+                                 "ErrorResponse",
+                                  
+                                  #USPS Response Fields
+                                  "Address2","City","State","Zip5","Zip4")
+  #                               "CityAbbreviation",,"DeliveryPoint","CarrierRoute", "Footnotes",
+  #                               "DPVConfirmation","DPVCMRA","DPVFootnotes",
+  #                               "Business","CentralDeliveryPoint","Vacant",
+  #                               "DPVFalse","ReturnText", 
+  #                               "FirmName", "Address1","Address2Abbreviation",
+  #                               "Urbanization"
+  #                               )
+
+## calculate time until complete, create timestamp info
+  st<-Sys.time() #track time - x is Start Time
+  r<-c()  #numeric list of records per minute 
+ 
+  
+  
+############################ Looping variables ###################
+  
+# Record Count - to decrement to 0 for looping   
+  rec_ct <- as.numeric(sum(!is.na(dirty_addie[,1])))
+  base_ct <- rec_ct   #base count is to hold the original number of records to lookup
+  time_ct <- 0        # counter for when to put out info on sytem time & records processed
+  
+################### Loops   #############################  
+
+##  Loop to pass de-duped dirty addresses to USPS to receive
+##  cleaned address info back.
+  
+  print(paste0("Start time is ", st))
+    
+  while (rec_ct >= 1){  #number of records loop
+    
+    ct <- 1
+    
+    while (ct %in% 1:5) { #count to 5 loop
+    
+        #get new address
+            AddressID <- as.numeric(min(dirty_addie$PremiseRecord))
+            FirmName <-dirty_addie$PremiseName[1]
+            Address1 <-""
+            Address2 <- dirty_addie$DirtyAddress[1]
+            City<- dirty_addie$DirtyCity[1]
+            State <- dirty_addie$DirtyState[1]
+            Zip5 <- dirty_addie$DirtyZip[1]
+            Zip4 <-""
+            
+            
+            basefields<- paste0("<Address ID=\"",
+                                AddressID,
+                                "\"><Address1>",
+                                Address1,
+                                "</Address1><Address2>",
+                                Address2,
+                                "</Address2><City>",
+                                City,
+                                "</City><State>",
+                                State,
+                                "</State><Zip5>",
+                                Zip5,
+                                "</Zip5><Zip4>",
+                                Zip4,
+                                "</Zip4></Address>")
+            
+            send_valxml<-paste0(scheme_host, validate_path, username, rev, basefields, val_end)
+ #           cat(send_valxml)
+      
+            #Send xml results to a data frame
+            clean <- xmlToDataFrame(xmlParse(send_valxml))
+            #Get the dimension of temp data frame clean to determine if error or data
+            ErrorCk<-dim(clean)
+            
+            #if unerrored response then process as no error
+            if(ErrorCk[2] > 1){
+            
+                clean2 <- cbind(dirty_addie[1,],ErrorResponse = "NoError", clean[1,])
+                cleaned_address <-bind_rows(cleaned_address, clean2)
+                
+            
+            } else if (ErrorCk[2] == 1) {
+              
+              #  Declare Empty data frame once for Errored responses
+              #because responses seem to be returning an unknown quantity 
+              
+              colCk <-dim(cleaned_address)
+              #base count of quantifiable columns so errored results can return NA
+              # however, if first record is not found, then logic is created for at
+              # minimum 7 columns
+              col<-colCk[2]-7  
+              Empty<-rbind(c(rep(NA,col)))
+              
+              
+              ErrorResponse <- clean # copy the error responses over
+              clean <- cbind(dirty_addie[1,],ErrorResponse, Empty)
+              colnames(clean)<-colnames(cleaned_address)
+              cleaned_address <-bind_rows(cleaned_address, clean)
+            } 
+
+            #because we're using the rec num from dirty addie for the counter 'i'
+            # need to remove records from dirty_addie so that we can get the minumum
+            #rec number for the next i
+#            write.table(cleaned_address, "CleanedAddies.txt", sep = "\t", row.names = FALSE, col.names = TRUE, eol = "\n")    
+            
+            dirty_addie<-dirty_addie[-1,]
+            rec_ct <- as.numeric(sum(!is.na(dirty_addie[,5])))
+            ct <- ct +1
+          
+            
+            #pause execution of loop / USPS requests    
+            #Sys.sleep(.3)
+
+    } #end of count to 5 loop
+            
+       time_ct <- time_ct + 5                
+                 
+            ## timers & record count updates to print out
+              if (time_ct%%10 == 0){
+              nt<-Sys.time() #get new system time to create a date difference
+              z<-as.numeric(round(difftime(nt,st, units = "min"), digits = 2))
+              
+              ct_rec <-base_ct - rec_ct
+              
+              r<-append(r,round(ct_rec/z,2))  #records per minute
+              mr<-round(mean(r),2)    #average number of records per minute
+              min_left<-nt+as.difftime(round(base_ct/mr,2), units = "mins")
+              
+              
+              cat(ct_rec," Records Processed in ", z, " minutes for ",mr, "AvgRec per Min with ",base_ct - ct_rec , "records left to process.\n")
+              print(paste0("Expected completion by ", min_left))
+             
+              x<-table(cleaned_address$ErrorResponse %in% c("NoError"))
+              if(is.na(x[1])){x[1]<- 0}
+              if(is.na(x[2])){x[2]<- 0}
+              cat("Number of Records with 'NoError':", x[2],". With Errors:",x[1], "for Total Records:", x[2]+x[1])
+              cat("\nError Rate = ",x[1]," out of ",x[2]+x[1], "or ", round(x[1]/(x[2]+x[1]),3)*100,"%")
+              cat("\n\n")
+                }     #end of IF loop
+
+  } # end of records loop
+  
+    nt<-Sys.time()
+    print(paste0(nt," Process ended with ", ct_rec, " records processed."))
+
+write.table(cleaned_address, "CleanedAddies.txt", sep = "\t", row.names = FALSE, col.names = TRUE, eol = "\n")    
+
+
+
+
+
+##    http://tidytextmining.com/tidytext.html
+##
+##
+
+
+##  unnest_tokens - separate each line of text in the original data frame into tokens. 
+##     The default tokenizing is for words, but other options include 
+##     characters, n-grams, sentences, lines, paragraphs, or separation around a regex pattern.
